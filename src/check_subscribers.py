@@ -48,9 +48,11 @@ def send_notification(topic: str, subscriber_count: int) -> bool:
     try:
         message = f"チャンネル登録者が増えました！\n現在 {subscriber_count:,} 人"
         # JSON形式を使用（HTTPヘッダーはASCIIのみのため日本語不可）
+        # JSON形式ではベースURLにPOSTし、topicをボディに含める
         response = requests.post(
-            f"{NTFY_URL}/{topic}",
+            NTFY_URL,
             json={
+                "topic": topic,
                 "message": message,
                 "title": "YouTube登録者増加",
                 "tags": ["tada", "youtube"],
