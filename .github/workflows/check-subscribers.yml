@@ -34,4 +34,5 @@ jobs:
         env:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TRIGGER_EVENT: ${{ github.event_name }}
         run: python src/check_subscribers.py
