@@ -45,20 +45,18 @@ def get_subscriber_count(api_key: str) -> int | None:
 
 def send_notification(topic: str, subscriber_count: int) -> bool:
     """ntfyで通知を送信"""
-    message = f"チャンネル登録者が増えました！\n現在 {subscriber_count:,} 人"
-
     try:
         response = requests.post(
             f"{NTFY_URL}/{topic}",
-            data=message.encode("utf-8"),
-            headers={
-                "Title": "YouTube登録者増加",
-                "Tags": "tada,youtube",
+            json={
+                "message": f"チャンネル登録者が増えました！\n現在 {subscriber_count:,} 人",
+                "title": "YouTube登録者増加",
+                "tags": ["tada", "youtube"],
             },
             timeout=30,
         )
         response.raise_for_status()
-        print(f"通知を送信しました: {message}")
+        print(f"通知を送信しました: 現在 {subscriber_count:,} 人")
         return True
 
     except requests.RequestException as e:
