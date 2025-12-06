@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """
 YouTube チャンネル統計監視スクリプト
-登録者数が増加、または再生回数が100回増加するごとにntfyで通知を送信する
+登録者数が増加、または再生回数が10回増加するごとにntfyで通知を送信する
 """
 
 import os
+import re
 import sys
 import requests
 
 # 設定
 CHANNEL_ID = "UC-f98IWFB5drYTG5FFeP1MQ"
 YOUTUBE_API_URL = "https://www.googleapis.com/youtube/v3/channels"
+YOUTUBE_PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
+YOUTUBE_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 NTFY_URL = "https://ntfy.sh"
 SUBSCRIBER_CACHE_FILE = "subscriber_count.txt"
 VIEW_THRESHOLD_FILE = "view_count_threshold.txt"
-VIEW_COUNT_MILESTONE = 100  # 再生回数の通知間隔
+VIEW_COUNT_MILESTONE = 10  # 再生回数の通知間隔
 
 
 def get_channel_stats(api_key: str) -> tuple[int, int] | None:
@@ -45,6 +48,130 @@ def get_channel_stats(api_key: str) -> tuple[int, int] | None:
     except (KeyError, IndexError, ValueError) as e:
         print(f"データ解析エラー: {e}")
         return None
+
+
+def get_uploads_playlist_id(api_key: str) -> str | None:
+    """チャンネルのアップロード動画プレイリストIDを取得"""
+    params = {
+        "part": "contentDetails",
+        "id": CHANNEL_ID,
+        "key": api_key,
+    }
+
+    try:
+        response = requests.get(YOUTUBE_API_URL, params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+
+        if not data.get("items"):
+            return None
+
+        return data["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
+
+    except (requests.RequestException, KeyError, IndexError):
+        return None
+
+
+def get_all_video_ids(api_key: str, playlist_id: str) -> list[str]:
+    """プレイリストから全動画IDを取得"""
+    video_ids = []
+    page_token = None
+
+    while True:
+        params = {
+            "part": "contentDetails",
+            "playlistId": playlist_id,
+            "maxResults": 50,
+            "key": api_key,
+        }
+        if page_token:
+            params["pageToken"] = page_token
+
+        try:
+            response = requests.get(
+                YOUTUBE_PLAYLIST_ITEMS_URL, params=params, timeout=30
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            for item in data.get("items", []):
+                video_id = item["contentDetails"]["videoId"]
+                video_ids.append(video_id)
+
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+
+        except requests.RequestException:
+            break
+
+    return video_ids
+
+
+def parse_duration(duration: str) -> int:
+    """ISO 8601形式の再生時間を秒に変換 (例: PT1H2M3S -> 3723秒)"""
+    match = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", duration)
+    if not match:
+        return 0
+
+    hours = int(match.group(1) or 0)
+    minutes = int(match.group(2) or 0)
+    seconds = int(match.group(3) or 0)
+
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def get_videos_duration(api_key: str, video_ids: list[str]) -> int:
+    """動画IDリストから総再生時間（秒）を取得"""
+    total_seconds = 0
+
+    # 50件ずつ取得（API制限）
+    for i in range(0, len(video_ids), 50):
+        batch = video_ids[i : i + 50]
+        params = {
+            "part": "contentDetails",
+            "id": ",".join(batch),
+            "key": api_key,
+        }
+
+        try:
+            response = requests.get(YOUTUBE_VIDEOS_URL, params=params, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+
+            for item in data.get("items", []):
+                duration = item["contentDetails"]["duration"]
+                total_seconds += parse_duration(duration)
+
+        except requests.RequestException:
+            continue
+
+    return total_seconds
+
+
+def format_duration(total_seconds: int) -> str:
+    """秒を「X時間Y分」形式にフォーマット"""
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+
+    if hours > 0:
+        return f"{hours}時間{minutes}分"
+    else:
+        return f"{minutes}分"
+
+
+def get_total_duration(api_key: str) -> str | None:
+    """チャンネル全動画の総再生時間を取得"""
+    playlist_id = get_uploads_playlist_id(api_key)
+    if not playlist_id:
+        return None
+
+    video_ids = get_all_video_ids(api_key, playlist_id)
+    if not video_ids:
+        return None
+
+    total_seconds = get_videos_duration(api_key, video_ids)
+    return format_duration(total_seconds)
 
 
 def send_notification(
@@ -81,9 +208,13 @@ def notify_subscriber_increase(topic: str, subscriber_count: int) -> bool:
     )
 
 
-def notify_view_milestone(topic: str, view_count: int, milestone: int) -> bool:
+def notify_view_milestone(
+    topic: str, view_count: int, milestone: int, total_duration: str | None = None
+) -> bool:
     """再生回数マイルストーン達成の通知を送信"""
     message = f"総再生回数が {milestone:,} 回を突破しました！\n現在 {view_count:,} 回"
+    if total_duration:
+        message += f"\n総コンテンツ時間: {total_duration}"
     return send_notification(
         topic, "🎬 YouTube再生回数", message, ["movie_camera", "youtube"]
     )
@@ -126,7 +257,7 @@ def save_view_threshold(threshold: int) -> None:
 
 
 def calculate_next_threshold(current_count: int) -> int:
-    """現在の再生回数から次の通知閾値を計算（100の倍数）"""
+    """現在の再生回数から次の通知閾値を計算（10の倍数）"""
     return ((current_count // VIEW_COUNT_MILESTONE) + 1) * VIEW_COUNT_MILESTONE
 
 
@@ -157,7 +288,10 @@ def main() -> int:
     if is_manual:
         print("手動実行: テスト通知を送信します")
         notify_subscriber_increase(ntfy_topic, subscriber_count)
-        notify_view_milestone(ntfy_topic, view_count, view_count)
+        total_duration = get_total_duration(api_key)
+        if total_duration:
+            print(f"総コンテンツ時間: {total_duration}")
+        notify_view_milestone(ntfy_topic, view_count, view_count, total_duration)
     else:
         # 登録者数のチェック
         previous_subscriber = load_previous_subscriber_count()
@@ -182,7 +316,10 @@ def main() -> int:
         elif view_count >= view_threshold:
             # 閾値を超えた！通知を送信
             print(f"再生回数が {view_threshold:,} 回を突破しました！")
-            notify_view_milestone(ntfy_topic, view_count, view_threshold)
+            total_duration = get_total_duration(api_key)
+            if total_duration:
+                print(f"総コンテンツ時間: {total_duration}")
+            notify_view_milestone(ntfy_topic, view_count, view_threshold, total_duration)
             # 次の閾値を計算して保存
             next_threshold = calculate_next_threshold(view_count)
             print(f"次の通知閾値を {next_threshold:,} 回に設定します")
