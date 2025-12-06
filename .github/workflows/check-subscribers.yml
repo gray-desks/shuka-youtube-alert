@@ -22,13 +22,15 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Restore subscriber count cache
+      - name: Restore channel stats cache
         uses: actions/cache@v4
         with:
-          path: subscriber_count.txt
-          key: subscriber-count-${{ github.run_id }}
+          path: |
+            subscriber_count.txt
+            view_count_threshold.txt
+          key: channel-stats-${{ github.run_id }}
           restore-keys: |
-            subscriber-count-
+            channel-stats-
 
       - name: Check subscriber count
         env:
