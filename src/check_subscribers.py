@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-YouTube チャンネル登録者数監視スクリプト
-登録者数が増加したらntfyで通知を送信する
+YouTube チャンネル統計監視スクリプト
+登録者数が増加、または再生回数が100回増加するごとにntfyで通知を送信する
 """
 
 import os
@@ -12,11 +12,13 @@ import requests
 CHANNEL_ID = "UC-f98IWFB5drYTG5FFeP1MQ"
 YOUTUBE_API_URL = "https://www.googleapis.com/youtube/v3/channels"
 NTFY_URL = "https://ntfy.sh"
-CACHE_FILE = "subscriber_count.txt"
+SUBSCRIBER_CACHE_FILE = "subscriber_count.txt"
+VIEW_THRESHOLD_FILE = "view_count_threshold.txt"
+VIEW_COUNT_MILESTONE = 100  # 再生回数の通知間隔
 
 
-def get_subscriber_count(api_key: str) -> int | None:
-    """YouTube Data APIから登録者数を取得"""
+def get_channel_stats(api_key: str) -> tuple[int, int] | None:
+    """YouTube Data APIから登録者数と再生回数を取得"""
     params = {
         "part": "statistics",
         "id": CHANNEL_ID,
@@ -32,8 +34,10 @@ def get_subscriber_count(api_key: str) -> int | None:
             print(f"エラー: チャンネルが見つかりません (ID: {CHANNEL_ID})")
             return None
 
-        subscriber_count = int(data["items"][0]["statistics"]["subscriberCount"])
-        return subscriber_count
+        stats = data["items"][0]["statistics"]
+        subscriber_count = int(stats["subscriberCount"])
+        view_count = int(stats["viewCount"])
+        return subscriber_count, view_count
 
     except requests.RequestException as e:
         print(f"YouTube API エラー: {e}")
@@ -43,10 +47,11 @@ def get_subscriber_count(api_key: str) -> int | None:
         return None
 
 
-def send_notification(topic: str, subscriber_count: int) -> bool:
+def send_notification(
+    topic: str, title: str, message: str, tags: list[str]
+) -> bool:
     """ntfyで通知を送信"""
     try:
-        message = f"チャンネル登録者が増えました！\n現在 {subscriber_count:,} 人"
         # JSON形式を使用（HTTPヘッダーはASCIIのみのため日本語不可）
         # JSON形式ではベースURLにPOSTし、topicをボディに含める
         response = requests.post(
@@ -54,13 +59,13 @@ def send_notification(topic: str, subscriber_count: int) -> bool:
             json={
                 "topic": topic,
                 "message": message,
-                "title": "YouTube登録者増加",
-                "tags": ["tada", "youtube"],
+                "title": title,
+                "tags": tags,
             },
             timeout=30,
         )
         response.raise_for_status()
-        print(f"通知を送信しました: 現在 {subscriber_count:,} 人")
+        print(f"通知を送信しました: {title}")
         return True
 
     except requests.RequestException as e:
@@ -68,22 +73,61 @@ def send_notification(topic: str, subscriber_count: int) -> bool:
         return False
 
 
-def load_previous_count() -> int | None:
+def notify_subscriber_increase(topic: str, subscriber_count: int) -> bool:
+    """登録者数増加の通知を送信"""
+    message = f"チャンネル登録者が増えました！\n現在 {subscriber_count:,} 人"
+    return send_notification(
+        topic, "📈 YouTube登録者増加", message, ["tada", "youtube"]
+    )
+
+
+def notify_view_milestone(topic: str, view_count: int, milestone: int) -> bool:
+    """再生回数マイルストーン達成の通知を送信"""
+    message = f"総再生回数が {milestone:,} 回を突破しました！\n現在 {view_count:,} 回"
+    return send_notification(
+        topic, "🎬 YouTube再生回数", message, ["movie_camera", "youtube"]
+    )
+
+
+def load_previous_subscriber_count() -> int | None:
     """前回の登録者数をファイルから読み込み"""
-    if not os.path.exists(CACHE_FILE):
+    if not os.path.exists(SUBSCRIBER_CACHE_FILE):
         return None
 
     try:
-        with open(CACHE_FILE, "r") as f:
+        with open(SUBSCRIBER_CACHE_FILE, "r") as f:
             return int(f.read().strip())
     except (ValueError, IOError):
         return None
 
 
-def save_current_count(count: int) -> None:
+def save_subscriber_count(count: int) -> None:
     """現在の登録者数をファイルに保存"""
-    with open(CACHE_FILE, "w") as f:
+    with open(SUBSCRIBER_CACHE_FILE, "w") as f:
         f.write(str(count))
+
+
+def load_view_threshold() -> int | None:
+    """再生回数の次の通知閾値をファイルから読み込み"""
+    if not os.path.exists(VIEW_THRESHOLD_FILE):
+        return None
+
+    try:
+        with open(VIEW_THRESHOLD_FILE, "r") as f:
+            return int(f.read().strip())
+    except (ValueError, IOError):
+        return None
+
+
+def save_view_threshold(threshold: int) -> None:
+    """再生回数の次の通知閾値をファイルに保存"""
+    with open(VIEW_THRESHOLD_FILE, "w") as f:
+        f.write(str(threshold))
+
+
+def calculate_next_threshold(current_count: int) -> int:
+    """現在の再生回数から次の通知閾値を計算（100の倍数）"""
+    return ((current_count // VIEW_COUNT_MILESTONE) + 1) * VIEW_COUNT_MILESTONE
 
 
 def main() -> int:
@@ -101,31 +145,53 @@ def main() -> int:
         print("エラー: NTFY_TOPIC が設定されていません")
         return 1
 
-    # 現在の登録者数を取得
-    current_count = get_subscriber_count(api_key)
-    if current_count is None:
+    # 現在のチャンネル統計を取得
+    stats = get_channel_stats(api_key)
+    if stats is None:
         return 1
 
-    print(f"現在の登録者数: {current_count:,} 人")
+    subscriber_count, view_count = stats
+    print(f"現在の登録者数: {subscriber_count:,} 人")
+    print(f"現在の総再生回数: {view_count:,} 回")
 
     if is_manual:
         print("手動実行: テスト通知を送信します")
-        send_notification(ntfy_topic, current_count)
+        notify_subscriber_increase(ntfy_topic, subscriber_count)
+        notify_view_milestone(ntfy_topic, view_count, view_count)
     else:
-        # 前回の登録者数と比較
-        previous_count = load_previous_count()
+        # 登録者数のチェック
+        previous_subscriber = load_previous_subscriber_count()
 
-        if previous_count is None:
+        if previous_subscriber is None:
             print("初回実行: 登録者数を記録します")
-        elif current_count > previous_count:
-            increase = current_count - previous_count
+        elif subscriber_count > previous_subscriber:
+            increase = subscriber_count - previous_subscriber
             print(f"登録者が {increase:,} 人増加しました！")
-            send_notification(ntfy_topic, current_count)
+            notify_subscriber_increase(ntfy_topic, subscriber_count)
         else:
             print("登録者数に変化はありません")
 
+        # 再生回数のチェック
+        view_threshold = load_view_threshold()
+
+        if view_threshold is None:
+            # 初回実行: 次の閾値を設定
+            next_threshold = calculate_next_threshold(view_count)
+            print(f"初回実行: 再生回数の次の通知閾値を {next_threshold:,} 回に設定します")
+            save_view_threshold(next_threshold)
+        elif view_count >= view_threshold:
+            # 閾値を超えた！通知を送信
+            print(f"再生回数が {view_threshold:,} 回を突破しました！")
+            notify_view_milestone(ntfy_topic, view_count, view_threshold)
+            # 次の閾値を計算して保存
+            next_threshold = calculate_next_threshold(view_count)
+            print(f"次の通知閾値を {next_threshold:,} 回に設定します")
+            save_view_threshold(next_threshold)
+        else:
+            print(f"再生回数は閾値 {view_threshold:,} 回に未達です")
+
     # 現在の登録者数を保存
-    save_current_count(current_count)
+    save_subscriber_count(subscriber_count)
 
     return 0
 
