@@ -164,13 +164,17 @@ def get_total_duration(api_key: str) -> str | None:
     """チャンネル全動画の総再生時間を取得"""
     playlist_id = get_uploads_playlist_id(api_key)
     if not playlist_id:
+        print("警告: アップロードプレイリストIDを取得できませんでした")
         return None
 
     video_ids = get_all_video_ids(api_key, playlist_id)
     if not video_ids:
+        print("警告: 動画IDを取得できませんでした")
         return None
 
+    print(f"動画数: {len(video_ids)}本")
     total_seconds = get_videos_duration(api_key, video_ids)
+    print(f"総再生時間: {total_seconds}秒")
     return format_duration(total_seconds)
 
 
