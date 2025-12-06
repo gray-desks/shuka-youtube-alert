@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 YouTube チャンネル統計監視スクリプト
-登録者数が増加、または再生回数が100回増加するごとにntfyで通知を送信する
+登録者数が増加、または再生回数が10回増加するごとにntfyで通知を送信する
 """
 
 import os
@@ -14,7 +14,7 @@ YOUTUBE_API_URL = "https://www.googleapis.com/youtube/v3/channels"
 NTFY_URL = "https://ntfy.sh"
 SUBSCRIBER_CACHE_FILE = "subscriber_count.txt"
 VIEW_THRESHOLD_FILE = "view_count_threshold.txt"
-VIEW_COUNT_MILESTONE = 100  # 再生回数の通知間隔
+VIEW_COUNT_MILESTONE = 10  # 再生回数の通知間隔
 
 
 def get_channel_stats(api_key: str) -> tuple[int, int] | None:
@@ -126,7 +126,7 @@ def save_view_threshold(threshold: int) -> None:
 
 
 def calculate_next_threshold(current_count: int) -> int:
-    """現在の再生回数から次の通知閾値を計算（100の倍数）"""
+    """現在の再生回数から次の通知閾値を計算（10の倍数）"""
     return ((current_count // VIEW_COUNT_MILESTONE) + 1) * VIEW_COUNT_MILESTONE
 
 
